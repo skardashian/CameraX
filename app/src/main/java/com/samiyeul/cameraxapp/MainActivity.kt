@@ -11,6 +11,7 @@ import android.util.Log
 import android.util.Rational
 import android.view.Surface
 import android.view.TextureView
+import android.widget.TextView
 import android.widget.Toast
 import androidx.camera.core.*
 import androidx.core.app.ActivityCompat
@@ -34,6 +35,7 @@ class MainActivity : AppCompatActivity(), LifecycleOwner {
         // Add this at the end of onCreate function
 
         textureView = findViewById(R.id.view_finder)
+        textView = findViewById(R.id.label)
 
         // Request camera permissions
         if (allPermissionsGranted()) {
@@ -53,6 +55,7 @@ class MainActivity : AppCompatActivity(), LifecycleOwner {
     // Add this after onCreate
 
     private lateinit var textureView: TextureView
+    private lateinit var textView: TextView
 
     private fun startCamera() {
         // Create configuration object for the viewfinder use case
@@ -84,6 +87,7 @@ class MainActivity : AppCompatActivity(), LifecycleOwner {
         val QrCodeAnalyzer = QrCodeAnalyzer { qrCodes ->
             qrCodes.forEach {
                 Log.d("MainActivity", "QR Code detected: ${it.rawValue}.")
+                textView.setText("QR Code Detected")
             }
         }
 
