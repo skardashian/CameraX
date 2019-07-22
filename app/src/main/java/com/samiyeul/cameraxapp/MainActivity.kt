@@ -7,18 +7,20 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.util.Size
 import android.graphics.Matrix
+import android.util.Log
 import android.util.Rational
 import android.view.Surface
 import android.view.TextureView
-import android.view.ViewGroup
 import android.widget.Toast
-import androidx.camera.core.CameraX
-import androidx.camera.core.Preview
-import androidx.camera.core.PreviewConfig
+import androidx.camera.core.*
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
-import java.util.concurrent.TimeUnit
+import com.google.firebase.ml.vision.FirebaseVision
+import com.google.firebase.ml.vision.barcode.FirebaseVisionBarcode
+import com.google.firebase.ml.vision.barcode.FirebaseVisionBarcodeDetectorOptions
+import com.google.firebase.ml.vision.common.FirebaseVisionImage
+import com.google.firebase.ml.vision.common.FirebaseVisionImageMetadata
 
 private const val REQUEST_CODE_PERMISSIONS = 10
 private val REQUIRED_PERMISSIONS = arrayOf(Manifest.permission.CAMERA)
@@ -31,65 +33,78 @@ class MainActivity : AppCompatActivity(), LifecycleOwner {
 
         // Add this at the end of onCreate function
 
-        viewFinder = findViewById(R.id.view_finder)
+        textureView = findViewById(R.id.view_finder)
 
         // Request camera permissions
         if (allPermissionsGranted()) {
-            viewFinder.post { startCamera() }
+            textureView.post { startCamera() }
         } else {
             ActivityCompat.requestPermissions(
-                this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS
+                    this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS
             )
         }
 
         // Every time the provided texture view changes, recompute layout
-        viewFinder.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+        textureView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             updateTransform()
         }
     }
 
     // Add this after onCreate
 
-    private lateinit var viewFinder: TextureView
+    private lateinit var textureView: TextureView
 
     private fun startCamera() {
         // Create configuration object for the viewfinder use case
         val previewConfig = PreviewConfig.Builder().apply {
-            setTargetAspectRatio(Rational(1, 1))
-            setTargetResolution(Size(640, 640))
+            setLensFacing(CameraX.LensFacing.BACK)
         }.build()
 
         // Build the viewfinder use case
         val preview = Preview(previewConfig)
 
         // Every time the viewfinder is updated, recompute layout
-        preview.setOnPreviewOutputUpdateListener {
+        preview.setOnPreviewOutputUpdateListener { previewOutput ->
 
-            // To update the SurfaceTexture, we have to remove it and re-add it
-            val parent = viewFinder.parent as ViewGroup
-            parent.removeView(viewFinder)
-            parent.addView(viewFinder, 0)
+            //            // To update the SurfaceTexture, we have to remove it and re-add it
+//            val parent = textureView.parent as ViewGroup
+//            parent.removeView(textureView)
+//            parent.addView(textureView, 0)
+//
+//            textureView.surfaceTexture = it.surfaceTexture
+//            updateTransform()
 
-            viewFinder.surfaceTexture = it.surfaceTexture
-            updateTransform()
+            textureView.surfaceTexture = previewOutput.surfaceTexture
         }
+
+        val imageAnalysisConfig = ImageAnalysisConfig.Builder()
+                .build()
+        val imageAnalysis = ImageAnalysis(imageAnalysisConfig)
+
+        val QrCodeAnalyzer = QrCodeAnalyzer { qrCodes ->
+            qrCodes.forEach {
+                Log.d("MainActivity", "QR Code detected: ${it.rawValue}.")
+            }
+        }
+
+        imageAnalysis.analyzer  = QrCodeAnalyzer
 
         // Bind use cases to lifecycle
         // If Android Studio complains about "this" being not a LifecycleOwner
         // try rebuilding the project or updating the appcompat dependency to
         // version 1.1.0 or higher.
-        CameraX.bindToLifecycle(this, preview)
+        CameraX.bindToLifecycle(this, preview, imageAnalysis)
     }
 
     private fun updateTransform() {
         val matrix = Matrix()
 
         // Compute the center of the view finder
-        val centerX = viewFinder.width / 2f
-        val centerY = viewFinder.height / 2f
+        val centerX = textureView.width / 2f
+        val centerY = textureView.height / 2f
 
         // Correct preview output to account for display rotation
-        val rotationDegrees = when (viewFinder.display.rotation) {
+        val rotationDegrees = when (textureView.display.rotation) {
             Surface.ROTATION_0 -> 0
             Surface.ROTATION_90 -> 90
             Surface.ROTATION_180 -> 180
@@ -99,7 +114,7 @@ class MainActivity : AppCompatActivity(), LifecycleOwner {
         matrix.postRotate(-rotationDegrees.toFloat(), centerX, centerY)
 
         // Finally, apply transformations to our TextureView
-        viewFinder.setTransform(matrix)
+        textureView.setTransform(matrix)
     }
 
     /**
@@ -107,16 +122,16 @@ class MainActivity : AppCompatActivity(), LifecycleOwner {
      * been granted? If yes, start Camera. Otherwise display a toast
      */
     override fun onRequestPermissionsResult(
-        requestCode: Int, permissions: Array<String>, grantResults: IntArray
+            requestCode: Int, permissions: Array<String>, grantResults: IntArray
     ) {
         if (requestCode == REQUEST_CODE_PERMISSIONS) {
             if (allPermissionsGranted()) {
-                viewFinder.post { startCamera() }
+                textureView.post { startCamera() }
             } else {
                 Toast.makeText(
-                    this,
-                    "Permissions not granted by the user.",
-                    Toast.LENGTH_SHORT
+                        this,
+                        "Permissions not granted by the user.",
+                        Toast.LENGTH_SHORT
                 ).show()
                 finish()
             }
@@ -128,7 +143,42 @@ class MainActivity : AppCompatActivity(), LifecycleOwner {
      */
     private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
         ContextCompat.checkSelfPermission(
-            baseContext, it
+                baseContext, it
         ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    class QrCodeAnalyzer(
+            private val onQrCodesDetected: (qrCodes: List<FirebaseVisionBarcode>) -> Unit
+    ) : ImageAnalysis.Analyzer {
+
+        override fun analyze(image: ImageProxy, rotationDegrees: Int) {
+            val options = FirebaseVisionBarcodeDetectorOptions.Builder()
+                    .setBarcodeFormats(FirebaseVisionBarcode.FORMAT_QR_CODE)
+                    .build()
+
+            val detector = FirebaseVision.getInstance().getVisionBarcodeDetector(options)
+
+            val rotation = rotationDegreesToFirebaseRotation(rotationDegrees)
+            val visionImage = FirebaseVisionImage.fromMediaImage(image.image!!, rotation)
+
+            detector.detectInImage(visionImage)
+                    .addOnSuccessListener { barcodes ->
+                        onQrCodesDetected(barcodes)
+                    }
+                    .addOnFailureListener {
+                        Log.e("QrCodeAnalyzer", "something went wrong", it)
+                    }
+
+        }
+
+        private fun rotationDegreesToFirebaseRotation(rotationDegrees: Int): Int {
+            return when (rotationDegrees) {
+                0 -> FirebaseVisionImageMetadata.ROTATION_0
+                90 -> FirebaseVisionImageMetadata.ROTATION_90
+                180 -> FirebaseVisionImageMetadata.ROTATION_180
+                270 -> FirebaseVisionImageMetadata.ROTATION_270
+                else -> throw IllegalArgumentException("Not supported")
+            }
+        }
     }
 }
